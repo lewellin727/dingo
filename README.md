@@ -36,7 +36,6 @@
 
 <div align="center">
 
-[English](README.md) · [简体中文](README_zh-CN.md) · [日本語](README_ja.md)
 
 </div>
 
@@ -240,9 +239,7 @@ dingo serve --port 9000
 dingo serve --transport stdio
 ```
 
-For detailed setup and Cursor/Claude Desktop integration, see the dedicated documentation:
-
-[English](README_mcp.md) · [简体中文](README_mcp_zh-CN.md) · [日本語](README_mcp_ja.md)
+For setup and usage, see the [MCP server section](#mcp-server).
 
 ## Video Demonstration
 
