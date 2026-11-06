@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Any
 
 from dingo.config.input_args import InputArgs, OpenEvalArgs
+from dingo.data import dataset_map, datasource_map
 from dingo.exec.base import Executor
 from dingo.io import SummaryModel
 from dingo.model.llm.llm_search_result_relevance import LLMSearchResultRelevance, RelevanceGrade, aggregate_grades
@@ -141,13 +142,11 @@ class RetrievalExecutor:
 
         for task_name in task_names:
             logger.info(f"Starting evaluation on task: {task_name}")
-            tasks = mteb.get_tasks(tasks=[task_name])
-            if not tasks:
-                logger.warning(f"Task {task_name!r} not found in MTEB, skipping")
-                continue
-
             try:
-                self._attach_relevant_docs(model, tasks)
+                data = list(self.load_data(task_name))
+                # 一个 task 可产出多个划分；收齐标注后，每个 task 只评测一次
+                tasks = list({id(item.task): item.task for item in data}.values())
+                self._attach_relevant_docs(model, data)
                 results = mteb.evaluate(
                     model,
                     tasks=tasks,
@@ -436,79 +435,12 @@ class RetrievalExecutor:
         return summary
 
     @staticmethod
-    def _attach_relevant_docs(model: SearchClientModel, tasks: list[Any]) -> None:
-        """Load task qrels into the search adapter for detailed trace annotation."""
-        for task in tasks:
-            task.load_data()
-            if hasattr(task, "convert_v1_dataset_format_to_v2"):
-                task.convert_v1_dataset_format_to_v2(num_proc=None)
-
-            task_name = task.metadata.name
-            attached = False
-            for hf_subset, splits in getattr(task, "dataset", {}).items():
-                if not isinstance(splits, dict):
-                    continue
-                for hf_split, data_split in splits.items():
-                    if not isinstance(data_split, dict):
-                        continue
-                    relevant_docs = data_split.get("relevant_docs")
-                    if relevant_docs is None:
-                        continue
-                    model.set_relevant_docs(
-                        task_name,
-                        hf_split,
-                        hf_subset,
-                        relevant_docs,
-                    )
-                    attached = True
-
-            if attached:
-                continue
-
-            hf_subset = getattr(task, "hf_subset", "default")
-            relevant_docs_dict = getattr(task, "relevant_docs", {})
-            for (
-                hf_subset,
-                hf_split,
-                relevant_docs,
-            ) in RetrievalExecutor._iter_legacy_qrels(relevant_docs_dict, hf_subset):
-                model.set_relevant_docs(
-                    task_name,
-                    hf_split,
-                    hf_subset,
-                    relevant_docs,
-                )
-
-    @staticmethod
-    def _iter_legacy_qrels(
-        relevant_docs_dict: Any,
-        default_subset: str,
-    ):
-        """Yield qrels from older MTEB task.relevant_docs layouts."""
-        if not isinstance(relevant_docs_dict, dict):
-            return
-
-        for key, value in relevant_docs_dict.items():
-            if RetrievalExecutor._looks_like_qrels(value):
-                yield default_subset, key, value
-            elif isinstance(value, dict):
-                for split, qrels in value.items():
-                    if RetrievalExecutor._looks_like_qrels(qrels):
-                        yield key, split, qrels
-
-    @staticmethod
-    def _looks_like_qrels(value: Any) -> bool:
-        if not isinstance(value, dict):
-            return False
-        if not value:
-            return True
-        sample = next(iter(value.values()))
-        if isinstance(sample, dict):
-            if not sample:
-                return True
-            nested_sample = next(iter(sample.values()))
-            return not isinstance(nested_sample, (dict, list, tuple, set))
-        return isinstance(sample, (list, tuple, set))
+    def _attach_relevant_docs(model: SearchClientModel, data) -> None:
+        """Attach already loaded labels without altering relevance scores here."""
+        for item in data:
+            model.set_relevant_docs(
+                item.task.metadata.name, item.split, item.subset, item.relevant_docs,
+            )
 
     @staticmethod
     def _run_open_eval(
@@ -677,8 +609,16 @@ class RetrievalExecutor:
             )
         return summary
 
-    def load_data(self):
-        pass
+    def load_data(self, task_name=None):
+        """Use the shared data pipeline while preserving existing CLI defaults."""
+        # 使用配置副本设置 MTEB 加载参数
+        args = self.input_args.model_copy(deep=True)
+        if task_name is not None:
+            args.input_path = task_name
+        args.dataset.source = "mteb"
+        args.dataset.format = "mteb"
+        source = datasource_map["mteb"](input_args=args)
+        return dataset_map["mteb"](source=source).get_data()
 
     def evaluate(self):
         pass

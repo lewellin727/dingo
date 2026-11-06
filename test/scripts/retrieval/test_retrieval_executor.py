@@ -151,10 +151,28 @@ class TestRetrievalExecutorFallbackMetrics:
         executor = RetrievalExecutor(input_args)
 
         monkeypatch.setattr(retrieval_module, "create_client", lambda *a, **k: FakeClient())
-        monkeypatch.setattr(mteb, "get_tasks", lambda tasks: [object()])
-        monkeypatch.setattr(RetrievalExecutor, "_attach_relevant_docs", lambda self, model, tasks: None)
+        split_data = {
+            "corpus": {"d1": {"title": "Paper", "text": "Evidence"}},
+            "queries": {"q1": "Question"},
+            "relevant_docs": {"q1": {"d1": 2}},
+        }
+        task = SimpleNamespace(
+            metadata=SimpleNamespace(name="SciFact", type="Retrieval"),
+            eval_splits=["test", "validation"], data_loaded=False,
+            dataset={"default": {"test": split_data, "validation": split_data}},
+        )
+        loads, evaluations = [], []
+        def load():
+            loads.append(task)
+            task.data_loaded = True
+        task.load_data = load
+        monkeypatch.setattr(mteb, "get_tasks", lambda tasks: [task])
 
         def fake_evaluate(model, tasks, overwrite_strategy):
+            evaluations.append(tasks)
+            assert tasks == [task]
+            assert model._relevant_docs_by_context[("SciFact", "test", "default")] == {"q1": {"d1"}}
+            assert model._relevant_docs_by_context[("SciFact", "validation", "default")] == {"q1": {"d1"}}
             model._search_traces.append({
                 "task": "SciFact",
                 "total_queries": 2,
@@ -191,6 +209,10 @@ class TestRetrievalExecutorFallbackMetrics:
 
         summary = executor.execute()
 
+        assert len(loads) == 1
+        assert len(evaluations) == 1
+        assert task.dataset["default"]["test"]["relevant_docs"]["q1"]["d1"] == 2
+        assert input_args.dataset.source == "hugging_face"
         assert summary.score == 0.5
         assert summary.metrics_score_stats["SciFact"]["main_score"] == 0.5
         assert summary.metrics_score_stats["SciFact"]["ndcg_at_10"] == 0.5

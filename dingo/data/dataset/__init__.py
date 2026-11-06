@@ -11,4 +11,8 @@ except Exception as e:
     log.warning("Spark Dataset not imported. Install: pip install pyspark")
     log.debug(str(e))
 
+from dingo.data.dataset.mteb import MTEBDataset  # noqa: F401
+
+from dingo.data.dataset.ann_benchmarks import ANNBenchmarksDataset  # noqa: F401
+
 dataset_map = Dataset.dataset_map

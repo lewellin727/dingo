@@ -79,6 +79,7 @@ dingo/
 │       └── cli.py           ← CLI entry point (subcommands: eval, eval-retrieval, info, serve)
 │
 ├── examples/                ← Usage examples (SDK, CLI, various scenarios)
+│   └── sciverse_benchmark/0-data-loading/ ← SciVerse IR and ANN dataset loading examples
 ├── test/                    ← Test suite
 │   ├── data/                ← Test data files
 │   ├── env/                 ← Test environment configs
