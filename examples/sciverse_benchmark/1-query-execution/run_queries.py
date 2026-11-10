@@ -1,4 +1,24 @@
-"""Run benchmark queries and write one JSONL record per attempt."""
+r"""Run benchmark queries and write one JSONL record per attempt.
+
+Use agentic or meta_search for SciFact and NFCorpus. Use milvus for SIFT1M
+with an existing collection populated from the benchmark vectors.
+
+Examples from this script's directory:
+
+    python run_queries.py --dataset SciFact --backend agentic \
+        --api-url https://api.sciverse.space --output scifact.jsonl
+
+    python run_queries.py --dataset SIFT1M --backend milvus \
+        --milvus-uri http://localhost:19530 --milvus-collection sift1m \
+        --output sift1m.jsonl
+
+Set SCIVERSE_API_TOKEN or MILVUS_TOKEN when the endpoint requires authentication.
+
+Each record includes dataset, subset, split, query_id, backend, top_k, hits,
+elapsed_ms, status, and error. Hits contain id and rank in service order.
+Elapsed time covers the client search call. Status is ok, empty, timeout,
+or error.
+"""
 
 import argparse
 import json

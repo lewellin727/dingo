@@ -1,4 +1,16 @@
-"""Milvus adapter for vector queries against an existing collection."""
+"""Milvus adapter for vector queries against an existing collection.
+
+Inject a connected PyMilvus client and specify the collection, primary key
+field, vector field, and timeout in seconds. Each call submits one dense query
+vector and returns VectorHit records with IDs and distances in service order.
+
+Example using an existing SDK client and a vector matching the collection:
+
+    client = MilvusSearchClient(
+        sdk, collection_name="sift1m", id_field="id", vector_field="vector", timeout=30.0,
+    )
+    hits = client.search(query_vector, limit=10)
+"""
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
