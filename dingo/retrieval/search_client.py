@@ -28,7 +28,12 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Generic, Optional, TypeVar
+from typing import Generic, Literal, Optional, TypeVar
+
+from requests.exceptions import RequestException
+from requests.exceptions import Timeout as RequestsTimeout
+from urllib3.exceptions import NewConnectionError
+from urllib3.exceptions import TimeoutError as Urllib3Timeout
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +49,49 @@ class PaperResult:
     raw: dict = field(default_factory=dict)
 
 
+SearchErrorKind = Literal["timeout", "transport", "http", "invalid_response", "unknown"]
+
+
+class InvalidSearchResponseError(ValueError):
+    """The backend returned an unrecognized response structure."""
+
+
+def classify_search_error(exc: Exception) -> SearchErrorKind:
+    if isinstance(exc, InvalidSearchResponseError):
+        return "invalid_response"
+
+    # gRPC is an optional dependency supplied by the Milvus SDK
+    try:
+        import grpc
+    except ImportError:
+        grpc = None
+
+    # Requests can wrap a urllib3 timeout in ConnectionError after retries
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        error = pending.pop()
+        if id(error) in seen:
+            continue
+        seen.add(id(error))
+        if isinstance(error, (TimeoutError, RequestsTimeout)):
+            return "timeout"
+        if isinstance(error, Urllib3Timeout) and not isinstance(error, NewConnectionError):
+            return "timeout"
+        if grpc is not None:
+            if isinstance(error, grpc.FutureTimeoutError):
+                return "timeout"
+            if isinstance(error, grpc.RpcError):
+                code = getattr(error, "code", None)
+                if callable(code) and code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+                    return "timeout"
+        nested = (error.__cause__, error.__context__, getattr(error, "reason", None), *error.args)
+        pending.extend(cause for cause in nested if isinstance(cause, BaseException))
+    if isinstance(exc, (ConnectionError, RequestException)):
+        return "transport"
+    return "unknown"
+
+
 @dataclass
 class SearchResponse:
     query: str
@@ -51,6 +99,8 @@ class SearchResponse:
     response_time_ms: float
     status_code: int
     error: Optional[str] = None
+    result_slots: list[dict[str, int | str | None]] | None = None
+    error_kind: SearchErrorKind | None = None
 
 
 _QueryT = TypeVar("_QueryT", contravariant=True)

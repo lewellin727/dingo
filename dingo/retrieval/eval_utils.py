@@ -15,6 +15,7 @@ import math
 import os
 import re
 import unicodedata
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Any
@@ -128,6 +129,47 @@ def compute_query_metrics(
         "recall_at_1000": round(recall1000, 5),
         "precision_at_10": round(rel_in_10 / 10, 5),
         "map_at_10": round(map10, 5),
+    }
+
+
+def compute_graded_ndcg_at_k(
+    ranked_doc_ids: Sequence[str],
+    qrels: Mapping[str, int],
+    k: int = 10,
+) -> float:
+    """Compute linear-gain nDCG at k, preserving original result ranks."""
+    if k <= 0 or not ranked_doc_ids:
+        return 0.0
+    positive_qrels = {f"doc:{doc_id}": grade for doc_id, grade in qrels.items() if grade > 0}
+    if not positive_qrels:
+        return 0.0
+
+    import pytrec_eval
+
+    run = {}
+    for rank, doc_id in enumerate(ranked_doc_ids[:k], start=1):
+        run_id = f"doc:{doc_id}"
+        if run_id in run:
+            # Keep repeated IDs in their original positions without extra gain
+            run_id = f"rank:{rank}"
+        run[run_id] = -rank
+
+    query_id = "query"
+    metric = f"ndcg_cut_{k}"
+    evaluator = pytrec_eval.RelevanceEvaluator({query_id: positive_qrels}, {metric})
+    return evaluator.evaluate({query_id: run})[query_id][metric]
+
+
+def summarize_latencies(elapsed_ms: Iterable[float]) -> dict[str, int | float | None]:
+    """Summarize elapsed milliseconds with nearest-rank percentiles."""
+    latencies = sorted(elapsed_ms)
+    count = len(latencies)
+    return {
+        "count": count,
+        "mean_ms": math.fsum(latencies) / count if count else None,
+        "p50_ms": latencies[math.ceil(0.50 * count) - 1] if count else None,
+        "p95_ms": latencies[math.ceil(0.95 * count) - 1] if count else None,
+        "p99_ms": latencies[math.ceil(0.99 * count) - 1] if count else None,
     }
 
 

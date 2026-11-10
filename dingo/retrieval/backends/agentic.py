@@ -65,6 +65,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from dingo.retrieval import search_client
 from dingo.retrieval.search_client import PaperResult, SearchResponse, TextSearchClient, register_backend
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ class AgenticSearchClient(TextSearchClient):
         "id",
         "doi",
     )
+    result_slot_id_fields: tuple[str, ...] | None = None
     title_fields = ("title", "paper_title", "name")
     text_fields = ("snippet", "chunk", "abstract", "summary", "description")
 
@@ -99,10 +101,12 @@ class AgenticSearchClient(TextSearchClient):
         retrieval_mode: str = "hybrid",
         sub_queries: int | None = None,
         api_token: str | None = None,
+        capture_result_slots: bool = False,
         **_kwargs: Any,
     ) -> None:
         self.base_url = api_url.rstrip("/")
         self.timeout = timeout
+        self.capture_result_slots = capture_result_slots
         self.retrieval_mode = (retrieval_mode or "hybrid").strip().lower()
         self.sub_queries = int(sub_queries) if sub_queries is not None else None
         self._last_request_time = 0.0
@@ -124,16 +128,19 @@ class AgenticSearchClient(TextSearchClient):
                 self.rate_limit,
             )
 
-        self._session = self._init_session(max_retries, retry_backoff)
+        self._session = self._init_session(
+            max_retries, retry_backoff, raise_on_status=not capture_result_slots,
+        )
 
     @staticmethod
-    def _init_session(max_retries: int, backoff: float) -> requests.Session:
+    def _init_session(max_retries: int, backoff: float, *, raise_on_status: bool = True) -> requests.Session:
         session = requests.Session()
         retry = Retry(
             total=max_retries,
             backoff_factor=backoff,
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["POST"],
+            raise_on_status=raise_on_status,
         )
         adapter = HTTPAdapter(max_retries=retry)
         session.mount("http://", adapter)
@@ -174,15 +181,25 @@ class AgenticSearchClient(TextSearchClient):
             )
             elapsed_ms = (time.monotonic() - start) * 1000
             if resp.status_code != 200:
+                error_kind = None
+                if self.capture_result_slots:
+                    error_kind = "timeout" if resp.status_code in (408, 504) else "http"
                 return SearchResponse(
                     query=query,
                     results=[],
                     response_time_ms=elapsed_ms,
                     status_code=resp.status_code,
                     error=f"HTTP {resp.status_code}: {resp.text[:300]}",
+                    error_kind=error_kind,
                 )
 
-            data = resp.json()
+            try:
+                data = resp.json()
+            except ValueError as exc:
+                if self.capture_result_slots:
+                    raise search_client.InvalidSearchResponseError("Invalid Sciverse JSON") from exc
+                raise
+            slots = self._parse_result_slots(data) if self.capture_result_slots else None
             results = self._parse_response(data)
 
             return SearchResponse(
@@ -190,6 +207,7 @@ class AgenticSearchClient(TextSearchClient):
                 results=results,
                 response_time_ms=elapsed_ms,
                 status_code=200,
+                result_slots=slots,
             )
         except Exception as e:
             elapsed_ms = (time.monotonic() - start) * 1000
@@ -198,7 +216,8 @@ class AgenticSearchClient(TextSearchClient):
                 results=[],
                 response_time_ms=elapsed_ms,
                 status_code=0,
-                error=str(e),
+                error=(str(e) or type(e).__name__) if self.capture_result_slots else str(e),
+                error_kind=search_client.classify_search_error(e) if self.capture_result_slots else None,
             )
 
     def _build_public_payload(self, query: str, limit: int) -> dict[str, Any]:
@@ -215,7 +234,7 @@ class AgenticSearchClient(TextSearchClient):
         }
 
     def _parse_response(self, data: Any) -> list[PaperResult]:
-        hits = self._extract_hits(data)
+        hits = self._extract_hits(data) or []
         results: list[PaperResult] = []
         for rank, hit in enumerate(hits, start=1):
             if not isinstance(hit, dict):
@@ -236,11 +255,11 @@ class AgenticSearchClient(TextSearchClient):
         return results
 
     @staticmethod
-    def _extract_hits(data: Any) -> list[Any]:
+    def _extract_hits(data: Any) -> list[Any] | None:
         if isinstance(data, list):
             return data
         if not isinstance(data, dict):
-            return []
+            return None
         for key in ("hits", "results", "items", "papers", "data", "records"):
             value = data.get(key)
             if isinstance(value, list):
@@ -251,7 +270,25 @@ class AgenticSearchClient(TextSearchClient):
                 value = nested.get(key)
                 if isinstance(value, list):
                     return value
-        return []
+        return None
+
+    def _parse_result_slots(self, data: Any) -> list[dict[str, int | str | None]]:
+        hits = self._extract_hits(data)
+        if hits is None:
+            raise search_client.InvalidSearchResponseError("Missing Sciverse result list")
+
+        slots = []
+        id_fields = self.result_slot_id_fields or self.id_fields
+        for rank, hit in enumerate(hits, start=1):
+            if not isinstance(hit, dict):
+                slots.append({"id": None, "rank": rank, "title": None})
+                continue
+            ids = (hit.get(field) for field in id_fields)
+            titles = (hit.get(field) for field in self.title_fields)
+            hit_id = next((str(value) for value in ids if type(value) in (int, str) and str(value).strip()), None)
+            title = next((value for value in titles if isinstance(value, str) and value.strip()), None)
+            slots.append({"id": hit_id, "rank": rank, "title": title})
+        return slots
 
     @staticmethod
     def _first_str(hit: dict[str, Any], fields: tuple[str, ...]) -> str:
@@ -287,6 +324,8 @@ class MetaSearchClient(AgenticSearchClient):
     name = "sciverse-meta-search-api"
     public_endpoint = "meta-search"
     local_endpoint = "meta-search"
+    # Metadata records have a unique ID even without a full-text document
+    result_slot_id_fields = ("unique_id", *AgenticSearchClient.id_fields)
 
     def __init__(
         self,

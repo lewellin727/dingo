@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from math import isfinite
 
-from dingo.retrieval.search_client import SearchClient
+from dingo.retrieval.search_client import InvalidSearchResponseError, SearchClient
 
 
 @dataclass(frozen=True)
@@ -51,7 +51,7 @@ class MilvusSearchClient(SearchClient[Sequence[float], list[VectorHit]]):
         self.vector_field = vector_field
         self.timeout = timeout
 
-    def search(self, query: Sequence[float], limit: int = 100) -> list[VectorHit]:
+    def _search_raw(self, query: Sequence[float], limit: int) -> list:
         if type(limit) is not int or limit <= 0:
             raise ValueError("Top-K must be a positive integer")
         if isinstance(query, (str, bytes)):
@@ -69,22 +69,39 @@ class MilvusSearchClient(SearchClient[Sequence[float], list[VectorHit]]):
             timeout=self.timeout,
         )
         if not isinstance(result, list) or len(result) > 1:
-            raise ValueError("Invalid Milvus response for a single query")
+            raise InvalidSearchResponseError("Invalid Milvus response for a single query")
         if not result:
             return []
         if not isinstance(result[0], list):
-            raise ValueError("Invalid Milvus hit list")
+            raise InvalidSearchResponseError("Invalid Milvus hit list")
 
+        return result[0]
+
+    def search(self, query: Sequence[float], limit: int = 100) -> list[VectorHit]:
         hits = []
-        for hit in result[0]:
+        for hit in self._search_raw(query, limit):
             if not isinstance(hit, Mapping):
                 raise ValueError("Invalid Milvus hit")
-            # PyMilvus can expose the primary key under its configured name or id
-            hit_id = hit.get(self.id_field, hit.get("id"))
-            distance = hit.get("distance")
+            hit_id, distance = self._hit_fields(hit)
             if type(hit_id) not in (int, str) or hit_id == "":
                 raise ValueError("Invalid Milvus hit ID")
             if type(distance) not in (int, float) or not isfinite(distance):
                 raise ValueError("Invalid Milvus hit distance")
             hits.append(VectorHit(id=hit_id, distance=float(distance)))
         return hits
+
+    def search_slots(self, query: Sequence[float], limit: int = 100) -> list[dict[str, int | str | float | None]]:
+        """Preserve original hit positions for benchmark collection."""
+        slots = []
+        for rank, hit in enumerate(self._search_raw(query, limit), start=1):
+            hit_id, distance = self._hit_fields(hit) if isinstance(hit, Mapping) else (None, None)
+            if type(hit_id) not in (int, str) or (isinstance(hit_id, str) and not hit_id.strip()):
+                hit_id = None
+            if type(distance) not in (int, float) or not isfinite(distance):
+                distance = None
+            slots.append({"id": hit_id, "rank": rank, "distance": distance})
+        return slots
+
+    def _hit_fields(self, hit: Mapping):
+        # PyMilvus can expose the primary key under its configured name or id
+        return hit.get(self.id_field, hit.get("id")), hit.get("distance")

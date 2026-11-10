@@ -15,7 +15,8 @@ Examples from this script's directory:
 Set SCIVERSE_API_TOKEN or MILVUS_TOKEN when the endpoint requires authentication.
 
 Each record includes dataset, subset, split, query_id, backend, top_k, hits,
-elapsed_ms, status, and error. Hits contain id and rank in service order.
+elapsed_ms, status, error_kind, and error. Hits retain their original ranks
+and include title for Sciverse or distance for Milvus. Missing fields are null.
 Elapsed time covers the client search call. Status is ok, empty, timeout,
 or error.
 """
@@ -30,8 +31,6 @@ from math import isfinite
 from pathlib import Path
 from time import perf_counter
 from urllib.parse import urlsplit
-
-from requests.exceptions import Timeout as RequestsTimeout
 
 CACHE_ROOT = Path("/data/liangzhilin/dingo/examples/sciverse_benchmark/0-data-loading")
 ANN_DATASET_NAME = "sift-128-euclidean"
@@ -107,7 +106,9 @@ def build_client(options, stack):
     if options.backend != "milvus":
         from dingo.retrieval import create_client
 
-        return create_client(options.backend, api_url=options.api_url, timeout=options.timeout)
+        return create_client(
+            options.backend, api_url=options.api_url, timeout=options.timeout, capture_result_slots=True,
+        )
 
     from dingo.retrieval.backends.milvus import MilvusSearchClient
 
@@ -132,25 +133,31 @@ def build_client(options, stack):
 
 
 def execute_query(client, query, top_k, backend):
+    from dingo.retrieval.search_client import classify_search_error
+
+    search = client.search_slots if backend == "milvus" else client.search
     start = perf_counter()
     try:
-        response = client.search(query, limit=top_k)
+        response = search(query, limit=top_k)
     except Exception as exc:
         elapsed_ms = (perf_counter() - start) * 1000
-        status = "timeout" if isinstance(exc, (TimeoutError, RequestsTimeout)) else "error"
-        return [], elapsed_ms, status, str(exc) or type(exc).__name__
+        error_kind = classify_search_error(exc)
+        status = "timeout" if error_kind == "timeout" else "error"
+        return [], elapsed_ms, status, error_kind, str(exc) or type(exc).__name__
 
     elapsed_ms = (perf_counter() - start) * 1000
     if backend == "milvus":
-        hit_ids = (hit.id for hit in response)
+        hits = response
     else:
-        if response.error is not None or response.status_code != 200:
-            status = "timeout" if response.status_code in (408, 504) else "error"
-            return [], elapsed_ms, status, response.error or f"HTTP {response.status_code}"
-        hit_ids = (hit.paper_id for hit in response.results)
+        if response.error_kind or response.error is not None or response.status_code != 200:
+            error_kind = response.error_kind or "unknown"
+            status = "timeout" if error_kind == "timeout" else "error"
+            return [], elapsed_ms, status, error_kind, response.error or f"HTTP {response.status_code}"
+        hits = response.result_slots
+        if hits is None:
+            return [], elapsed_ms, "error", "invalid_response", "Missing Sciverse result slots"
 
-    hits = [{"id": hit_id, "rank": rank} for rank, hit_id in enumerate(hit_ids, 1)]
-    return hits, elapsed_ms, "ok" if hits else "empty", None
+    return hits, elapsed_ms, "ok" if hits else "empty", None, None
 
 
 def write_queries(client, bundles, options, output):
@@ -164,7 +171,7 @@ def write_queries(client, bundles, options, output):
             queries = ((row["id"], row["text"]) for row in data.queries)
 
         for query_id, query in islice(queries, options.max_queries - written):
-            hits, elapsed_ms, status, error = execute_query(
+            hits, elapsed_ms, status, error_kind, error = execute_query(
                 client, query, options.top_k, options.backend,
             )
             record = {
@@ -177,6 +184,7 @@ def write_queries(client, bundles, options, output):
                 "hits": hits,
                 "elapsed_ms": elapsed_ms,
                 "status": status,
+                "error_kind": error_kind,
                 "error": error,
             }
             output.write(json.dumps(record, ensure_ascii=False) + "\n")
