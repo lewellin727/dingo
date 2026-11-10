@@ -1,15 +1,15 @@
 """
 Abstract search client interface for retrieval evaluation.
 
-All search backends implement SearchClient. The evaluation executor
-only depends on this interface.
+SearchClient defines the query interface. The text evaluation executor
+uses backends that accept strings and return SearchResponse.
 
 Adding a new backend:
 
-    from dingo.retrieval.search_client import SearchClient, SearchResponse, register_backend
+    from dingo.retrieval.search_client import SearchResponse, TextSearchClient, register_backend
 
     @register_backend("my_backend")
-    class MyClient(SearchClient):
+    class MyClient(TextSearchClient):
         name = "my-backend"
 
         def __init__(self, **kwargs):
@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Generic, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -53,14 +53,21 @@ class SearchResponse:
     error: Optional[str] = None
 
 
-class SearchClient(ABC):
+_QueryT = TypeVar("_QueryT", contravariant=True)
+_ResponseT = TypeVar("_ResponseT", covariant=True)
+
+
+class SearchClient(ABC, Generic[_QueryT, _ResponseT]):
+    """Common interface for executing a search."""
+
     name: str = "unknown"
 
     @abstractmethod
-    def search(self, query: str, limit: int = 100) -> SearchResponse:
+    def search(self, query: _QueryT, limit: int = 100) -> _ResponseT:
         ...
 
-    def dry_run(self, query: str, limit: int = 5) -> None:
+    def dry_run(self: SearchClient[str, SearchResponse], query: str, limit: int = 5) -> None:
+        """Preview paper results from a text client."""
         response = self.search(query, limit=limit)
         if response.error:
             logger.error(f"Error: {response.error}")
@@ -74,12 +81,18 @@ class SearchClient(ABC):
             print(f"      ID: {p.paper_id} | Score: {p.score:.4f}")
 
 
-_BACKENDS: dict[str, type[SearchClient]] = {}
+class TextSearchClient(SearchClient[str, SearchResponse]):
+    """Base class for text queries that return papers."""
+
+
+_TextClientClassT = TypeVar("_TextClientClassT", bound=type[SearchClient[str, SearchResponse]])
+
+_BACKENDS: dict[str, type[SearchClient[str, SearchResponse]]] = {}
 _BACKENDS_LOADED = False
 
 
 def register_backend(name: str):
-    def decorator(cls: type[SearchClient]):
+    def decorator(cls: _TextClientClassT) -> _TextClientClassT:
         _BACKENDS[name] = cls
         return cls
 
@@ -110,7 +123,7 @@ def list_backends() -> list[str]:
     return sorted(_BACKENDS.keys())
 
 
-def create_client(name: str, **kwargs) -> SearchClient:
+def create_client(name: str, **kwargs) -> SearchClient[str, SearchResponse]:
     _load_builtin_backends()
     if name not in _BACKENDS:
         available = ", ".join(list_backends()) or "(none)"

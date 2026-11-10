@@ -29,7 +29,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from dingo.retrieval.search_client import PaperResult, SearchClient, SearchResponse, register_backend
+from dingo.retrieval.search_client import PaperResult, SearchResponse, TextSearchClient, register_backend
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ _DEFAULT_FIELDS = "paperId,title,abstract,authors,year,citationCount"
 
 
 @register_backend("semantic_scholar")
-class SemanticScholarClient(SearchClient):
+class SemanticScholarClient(TextSearchClient):
     name = "semantic-scholar-api"
 
     def __init__(

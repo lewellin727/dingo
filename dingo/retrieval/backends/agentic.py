@@ -65,13 +65,13 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from dingo.retrieval.search_client import PaperResult, SearchClient, SearchResponse, register_backend
+from dingo.retrieval.search_client import PaperResult, SearchResponse, TextSearchClient, register_backend
 
 logger = logging.getLogger(__name__)
 
 
 @register_backend("agentic")
-class AgenticSearchClient(SearchClient):
+class AgenticSearchClient(TextSearchClient):
     name = "agentic-search-api"
     public_endpoint = "agentic-search"
     local_endpoint = "v1/search"

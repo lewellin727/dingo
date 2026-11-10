@@ -1,7 +1,7 @@
 """
 MTEB SearchProtocol adapter for SearchClient backends.
 
-Wraps any SearchClient as an MTEB-compatible search model, bridging external
+Wraps a text SearchClient as an MTEB-compatible search model, bridging external
 search APIs to MTEB's metric computation pipeline.
 
 Usage:
@@ -125,11 +125,11 @@ except Exception:
 
 
 class SearchClientModel:
-    """MTEB SearchProtocol adapter for SearchClient backends."""
+    """MTEB SearchProtocol adapter for text search clients."""
 
     def __init__(
         self,
-        client: SearchClient,
+        client: SearchClient[str, SearchResponse],
         search_limit: int = 100,
         max_queries: int | None = None,
         max_workers: int = 1,

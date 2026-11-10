@@ -44,7 +44,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from dingo.retrieval.search_client import PaperResult, SearchClient, SearchResponse, register_backend
+from dingo.retrieval.search_client import PaperResult, SearchResponse, TextSearchClient, register_backend
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ _DEFAULT_SELECT = (
 
 
 @register_backend("openalex")
-class OpenAlexClient(SearchClient):
+class OpenAlexClient(TextSearchClient):
     name = "openalex-api"
 
     def __init__(
